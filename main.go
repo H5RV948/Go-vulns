@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
-	"context"
 )
 
 type Result struct {
@@ -27,12 +28,55 @@ func (h HeaderChecker) Name() string {
  }
 
 func (h HeaderChecker) Run(ctx context.Context, target string) Result {
-	time.Sleep(500*time.Millisecond) // testing
+	// REQUEST
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return Result {
+			Target: target,
+			Check: h.Name(),
+			Passed: false,
+			Details: "Invalid URL or request error: " + err.Error(),
+		}
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Result{
+			Target: target,
+			Check: h.Name(),
+			Passed: false,
+			Details: "Connction failed/timed out: "+ err.Error(),
+		}
+	}
+	defer resp.Body.Close()
+
+	// Inspection of security headers
+	missing := []string{}
+	if resp.Header.Get("Strict-Transport-Security") == "" {
+		missing = append(missing, "HSTS")
+	}
+	if resp.Header.Get("X-Frame-Options") == "" {
+		missing = append(missing, "X-Frame-Options")
+	}
+	if resp.Header.Get("X-Content-Type-Options") == "" {
+		missing = append(missing, "X-Content-Type-Options")
+	}
+
+	if len(missing) > 0 {
+		return Result {
+			Target: target,
+			Check: h.Name(),
+			Passed: false,
+			Details: fmt.Sprintf("Missing security headers: %v", missing),
+		}
+	}
+	
  	return Result {
   		Target: target,
    		Check: h.Name(),
     	Passed: true,
-     	Details: "eh http",
+     	Details: "All security headers present",
   }
 }
 
@@ -40,16 +84,54 @@ func (h HeaderChecker) Run(ctx context.Context, target string) Result {
 type CorsChecker struct {}
 
 func (c CorsChecker) Name() string {
-	return	"CORS insecure configration checker"
+	return	"CORS insecure configuration checker"
 }
 
 func (c CorsChecker) Run(ctx context.Context, target string) Result {
-	time.Sleep(300*time.Millisecond) // testing
+	// REQUEST
+	req, err := http.NewRequestWithContext(ctx, http.MethodOptions, target, nil)
+	if err != nil {
+		return Result {
+			Target: target,
+			Check: c.Name(),
+			Passed: false,
+			Details: err.Error(),
+		}
+	}
+
+	Origin := "https://eh.com"
+	req.Header.Set("Origin", Origin)
+	req.Header.Set("Access-Control-Request-Method", "GET")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Result {
+			Target: target,
+			Check: c.Name(),
+			Passed: false,
+			Details: "Connection failed/timed out: " + err.Error(),
+		}
+	}
+	defer resp.Body.Close()
+
+	allowOrigin := resp.Header.Get("Access-Control-Allow-Origin")
+
+
+	if allowOrigin == "*" || allowOrigin == Origin {
+		return Result {
+			Target: target,
+			Check: c.Name(),
+			Passed: false,
+			Details: fmt.Sprintf("[Vulnerable CORS Policy detected] Allowed Origin: %s", allowOrigin),
+		}
+	}
+	
 	return Result {
 		Target: target,
 		Check: c.Name(),
 		Passed: true,
-		Details: "eh cors",
+		Details: "CORS policy configured correctly",
 	}
 }
 
@@ -103,11 +185,14 @@ func main() {
 	}()
 
 	// collector
-	for res := range results { // A channel is a strem of values (no index)
-		fmt.Printf("[%s] Target: %s | Passed: %t | Details: %s\n", res.Check, res.Target, res.Passed, res.Details)
+	for res := range results { // A channel is a stream of values (no index)
+		status := "PASS :D"
+		if !res.Passed {
+			status = "FAIL ;("
+		}
+		fmt.Printf("%s [%s] Target: %s | Details: %s\n", status, res.Check, res.Target, res.Details)
 	}
 	
-	fmt.Println("yayaayayayayayayay")
-		 
+	fmt.Printf("\n--- SCANS COMPLETED SUCCESSFULLY ---")
 }
 
