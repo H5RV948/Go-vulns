@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"context"
 )
 
 type Result struct {
@@ -15,7 +16,7 @@ type Result struct {
 
 type Checker interface {
 	Name() string
-	Run (target string) Result
+	Run (ctx context.Context, target string) Result
 }
 
 // Http
@@ -25,7 +26,7 @@ func (h HeaderChecker) Name() string {
 	return "HTTP security Headers"
  }
 
-func (h HeaderChecker) Run(target string) Result {
+func (h HeaderChecker) Run(ctx context.Context, target string) Result {
 	time.Sleep(500*time.Millisecond) // testing
  	return Result {
   		Target: target,
@@ -42,7 +43,7 @@ func (c CorsChecker) Name() string {
 	return	"CORS insecure configration checker"
 }
 
-func (c CorsChecker) Run(target string) Result {
+func (c CorsChecker) Run(ctx context.Context, target string) Result {
 	time.Sleep(300*time.Millisecond) // testing
 	return Result {
 		Target: target,
@@ -52,25 +53,50 @@ func (c CorsChecker) Run(target string) Result {
 	}
 }
 
+type Job struct {
+	Target string
+	Checker Checker
+}
+
+func worker(id int, jobs <- chan Job, results chan <- Result, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for job := range jobs {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+
+		res := job.Checker.Run(ctx, job.Target)
+		cancel()
+		
+		results <- res
+	}
+}
+
+
 func main() {
 	targets := []string{"https://google.com", "https://nmap.org"}
 	checkers := []Checker{HeaderChecker{}, CorsChecker{}}
 
 	var wg sync.WaitGroup
-	results := make(chan Result, 20)
 
-	for _, c := range checkers {
-		for _, t := range targets {
-			wg.Add(1)
-			go func(c Checker, t string) {
-				defer wg.Done()
-				res := c.Run(t)
-				results <- res
-			} (c, t)
-		}
+	numJobs := len(targets) * len(checkers)
+	results := make(chan Result, numJobs)
+	jobs := make(chan Job, numJobs)
+	
+	numWorkers := 3
+	for i := 1; i <= numWorkers; i++ {
+		wg.Add(1)
+		go worker(i, jobs, results, &wg)
 	}
 
-	// wait until workers are finished
+	
+	for _, c := range checkers {
+		for _, t := range targets {
+			jobs <- Job {Target: t, Checker: c }
+		}
+	}
+	close(jobs)
+	
+	// wait until workers are finished 
 	go func() {
 		wg.Wait()
 		close(results)
